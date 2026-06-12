@@ -1,0 +1,20 @@
+# Ignore everything by default
+*
+
+# Explicitly allow the core source files and documentation
+!.gitignore
+!README.md
+!setup.iss
+!wifi_auditor.py
+!win_cracker.potfile
+!win_cracker.py
+!COMPILATION_GUIDE.md
+
+# Ensure directories like handshakes/, old/, audit_temp/, __pycache__/, and dist/ are completely ignored
+handshakes/
+old/
+audit_temp/
+__pycache__/
+dist/
+build/
+*.spec
