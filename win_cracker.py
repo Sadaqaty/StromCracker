@@ -236,15 +236,24 @@ class WinCrackerApp(ctk.CTk):
 
     def _pause_crack(self):
         if self.hashcat_proc:
-            self._log("Sending interrupt signal to Hashcat...")
+            self._log("Saving session and halting compute...")
             try:
-                if os.name == 'nt':
-                    self.hashcat_proc.send_signal(signal.CTRL_C_EVENT)
-                else:
-                    self.hashcat_proc.send_signal(signal.SIGINT)
+                # Send 'q' to Hashcat's stdin to trigger a clean exit and save the .restore file
+                if self.hashcat_proc.stdin:
+                    self.hashcat_proc.stdin.write('q\n')
+                    self.hashcat_proc.stdin.flush()
+                
+                # Wait up to 3 seconds for clean exit
+                try:
+                    self.hashcat_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._log("Clean exit timed out. Forcing kill.")
+                    self.hashcat_proc.kill()
+                    
             except Exception as e:
                 self._log(f"Interrupt failed: {e}. Forcing kill.")
                 self.hashcat_proc.kill()
+                
         self._reset_ui()
         self._log("Compute paused. Session saved.")
 
@@ -261,12 +270,19 @@ class WinCrackerApp(ctk.CTk):
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW # Hide console window
             creationflags = subprocess.CREATE_NO_WINDOW
             
+        # Force Python to not buffer the output so the UI updates instantly
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+            
         try:
             self.hashcat_proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                bufsize=1, # Line buffered
+                env=env,
                 startupinfo=startupinfo,
                 creationflags=creationflags
             )

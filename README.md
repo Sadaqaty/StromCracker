@@ -30,10 +30,24 @@ A premium, modern Graphical User Interface built on `customtkinter` that wraps H
 
 ### Running the Auditor (Linux)
 Ensure you have the `aircrack-ng` suite and `hcxtools` installed.
+
+The `wifi_auditor.py` script can be run entirely autonomously, or strictly configured via CLI flags:
+
 ```bash
+# Autonomous Mode: Scans all networks, targets strong signals, and attempts cracks automatically
 sudo python3 wifi_auditor.py
+
+# Target Mode: Attack only a specific network
+sudo python3 wifi_auditor.py -t "My Network"
+
+# Filter Mode: Only attack networks with strong signals (-70 dBm or higher)
+sudo python3 wifi_auditor.py -s -70
+
+# Capture Only Mode: Capture handshakes without engaging Hashcat
+sudo python3 wifi_auditor.py --skip-crack
 ```
-The script will automatically grab your wireless interface, drop it into monitor mode, and begin the capture cycle.
+
+Use `sudo python3 wifi_auditor.py --help` to see all available options, including manual interface selection (`-i`) and timeout controls (`--timeout`).
 
 ### Running the Cracker (Cross-Platform)
 Ensure you have `customtkinter` installed (`pip install customtkinter`).
