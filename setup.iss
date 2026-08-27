@@ -2,14 +2,14 @@
 ; Compiles the standalone EXE, Hashcat, and Wordlist into a professional Setup.exe installer
 
 [Setup]
-AppName=StormCracker
+AppName=WinCracker
 AppVersion=1.0
 AppPublisher=Storm Labs
-AppPublisherURL=https://github.com/
-DefaultDirName={localappdata}\StormCracker
-DefaultGroupName=StormCracker
+AppPublisherURL=https://github.com/sadaqaty
+DefaultDirName={localappdata}\WinCracker
+DefaultGroupName=WinCracker
 DisableProgramGroupPage=yes
-OutputBaseFilename=StormCracker_Setup
+OutputBaseFilename=WinCracker_Setup
 Compression=lzma2/ultra
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
@@ -32,8 +32,8 @@ Source: "hashcat.hcstat2"; DestDir: "{app}"; Flags: ignoreversion
 Source: "rockyou.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\StormCracker"; Filename: "{app}\win_cracker.exe"
-Name: "{autodesktop}\StormCracker"; Filename: "{app}\win_cracker.exe"; Tasks: desktopicon
+Name: "{group}\WinCracker"; Filename: "{app}\win_cracker.exe"
+Name: "{autodesktop}\WinCracker"; Filename: "{app}\win_cracker.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\win_cracker.exe"; Description: "Launch StormCracker"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\win_cracker.exe"; Description: "Launch WinCracker"; Flags: nowait postinstall skipifsilent

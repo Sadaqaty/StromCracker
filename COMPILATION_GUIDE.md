@@ -1,6 +1,6 @@
 # StormCracker GUI Compilation Guide
 
-This guide provides step-by-step instructions for compiling the StormCracker GUI into a standalone executable for Linux and Windows, as well as creating the final Windows installer (`Setup.exe`).
+This guide provides step-by-step instructions for compiling the StormCracker GUI into a standalone executable for Linux and Windows, as well as creating the final Windows installer (`WinCracker_Setup.exe`).
 
 ## Prerequisites (Both OS)
 Ensure you have the required Python packages installed:
@@ -10,7 +10,21 @@ pip install customtkinter pyinstaller
 
 ---
 
-## 1. Compiling for Linux (Kali / Ubuntu)
+## 🚀 Automated Cloud Compilation (GitHub Actions)
+
+This repository is equipped with a complete CI/CD pipeline. You do **not** need to compile anything manually if you don't want to!
+
+Every time you push code to the `main` branch on GitHub:
+1. GitHub Actions will automatically spin up Linux and Windows servers.
+2. It will compile the Linux binaries and package them into a professional `.deb` installer.
+3. It will download the Hashcat binaries, compile the Windows GUI, and package everything into `WinCracker_Setup.exe`.
+4. It will instantly publish these files to the **Releases** tab on your GitHub repository.
+
+If you wish to compile them manually, follow the steps below.
+
+---
+
+## 1. Manual Compiling for Linux (Kali / Ubuntu)
 
 Because Linux natively has Hashcat available in the package manager, we do **not** need to embed a heavy Hashcat binary or Wordlist into the executable. The script is smart enough to find them dynamically on the system.
 
@@ -24,7 +38,7 @@ Because Linux natively has Hashcat available in the package manager, we do **not
 
 ---
 
-## 2. Compiling for Windows (The Setup Installer)
+## 2. Manual Compiling for Windows (The Setup Installer)
 
 For Windows, we use a two-step professional deployment approach. First, we compile a lightweight GUI executable. Then, we use Inno Setup to bundle it together with the Hashcat engine and Wordlist into a proper Windows installer.
 
@@ -38,7 +52,7 @@ For Windows, we use a two-step professional deployment approach. First, we compi
    ```
 3. This will create a tiny `win_cracker.exe` file in the `dist\` directory.
 
-### Step 2B: Create the Professional `Setup.exe` Installer
+### Step 2B: Create the Professional `WinCracker_Setup.exe` Installer
 *(Run this step on your Windows machine)*
 
 1. Download and install **Inno Setup** (it is free).
@@ -50,7 +64,7 @@ For Windows, we use a two-step professional deployment approach. First, we compi
    - `rockyou.txt`
 3. Double-click the `setup.iss` file to open it in Inno Setup.
 4. Click the **Compile** button (or press `Ctrl+F9`).
-5. Inno Setup will instantly compress all the files and generate a beautiful `StormCracker_Setup.exe` in the `Output\` folder.
+5. Inno Setup will instantly compress all the files and generate a beautiful `WinCracker_Setup.exe` in the `Output\` folder.
 
 ### Deployment
-You can now give `StormCracker_Setup.exe` to anyone. When they double-click it, it will launch a classic installation wizard, permanently extract the engine and wordlist to `%localappdata%\StormCracker`, and put a convenient shortcut on their Desktop!
+You can now give `WinCracker_Setup.exe` to anyone. When they double-click it, it will launch a classic installation wizard, permanently extract the engine and wordlist to `%localappdata%\WinCracker`, and put a convenient shortcut on their Desktop!

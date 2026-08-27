@@ -1,0 +1,117 @@
+name: Build StormCracker Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ created ]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller customtkinter
+        sudo apt-get update
+        sudo apt-get install -y ruby ruby-dev rubygems build-essential
+        sudo gem install --no-document fpm
+
+    - name: Build Linux Binaries
+      run: |
+        pyinstaller --noconfirm --onefile --windowed --name stormcracker_gui win_cracker.py
+        pyinstaller --noconfirm --onefile --name stormcracker_auditor wifi_auditor.py
+
+    - name: Package DEB
+      run: |
+        mkdir -p package_deb/usr/local/bin
+        cp dist/stormcracker_auditor package_deb/usr/local/bin/
+        cp dist/stormcracker_gui package_deb/usr/local/bin/
+        fpm -s dir -t deb -n stormcracker -v 1.0.0 -C package_deb \
+          --description "StormCracker Autonomous WiFi Auditor Suite" \
+          --maintainer "Storm Labs" \
+          usr/local/bin
+
+    - name: Upload Linux Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: linux-builds
+        path: |
+          dist/stormcracker_auditor
+          dist/stormcracker_gui
+          *.deb
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller customtkinter
+
+    - name: Build Windows GUI Binary
+      run: |
+        pyinstaller --noconfirm --onefile --windowed win_cracker.py
+
+    - name: Download and Prepare Dependencies
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/hashcat/hashcat/releases/download/v6.2.6/hashcat-6.2.6.7z" -OutFile "hashcat.7z"
+        Invoke-WebRequest -Uri "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt" -OutFile "rockyou.txt"
+        7z x hashcat.7z
+        Move-Item -Path hashcat-6.2.6\* -Destination .
+
+    - name: Compile Inno Setup Installer
+      uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+      with:
+        path: setup.iss
+
+    - name: Upload Windows Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: windows-installer
+        path: Output/WinCracker_Setup.exe
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: linux-builds
+          path: release_assets/
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: windows-installer
+          path: release_assets/
+
+      - name: Push to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: "StormCracker Continuous Build"
+          files: release_assets/**/*
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
