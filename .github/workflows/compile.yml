@@ -12,7 +12,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -43,7 +43,7 @@ jobs:
           usr/local/bin
 
     - name: Upload Linux Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: linux-builds
         path: |
@@ -54,7 +54,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -83,7 +83,7 @@ jobs:
         path: setup.iss
 
     - name: Upload Windows Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-installer
         path: Output/WinCracker_Setup.exe
@@ -94,13 +94,13 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
       - name: Download Linux Artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: linux-builds
           path: release_assets/
 
       - name: Download Windows Artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: windows-installer
           path: release_assets/
