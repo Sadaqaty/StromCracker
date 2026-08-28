@@ -19,6 +19,7 @@ CRACKED_PASSWORDS_FILE = "cracked_passwords.txt"
 LOG_FILE = "audit.log"
 
 ACTIVE_PROCS = []
+ORIGINAL_MODE_RESTORE = None
 
 def log(message):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -61,26 +62,52 @@ def cleanup(signum=None, frame=None):
                 except Exception:
                     pass
     
+    if ORIGINAL_MODE_RESTORE:
+        log(f"Restoring interface {ORIGINAL_MODE_RESTORE} to managed mode...")
+        run_cmd(f"ip link set {ORIGINAL_MODE_RESTORE} down", check=False)
+        run_cmd(f"iw dev {ORIGINAL_MODE_RESTORE} set type managed", check=False)
+        run_cmd(f"ip link set {ORIGINAL_MODE_RESTORE} up", check=False)
+
     if signum:
         sys.exit(1)
 
 def get_monitor_interface(args):
-    if args.interface:
-        log(f"Using specified interface: {args.interface}")
-        return args.interface
+    global ORIGINAL_MODE_RESTORE
+    iface = args.interface
 
-    output = run_cmd("iwconfig 2>/dev/null", check=False)
-    if output:
-        current_iface = None
-        for line in output.splitlines():
-            if line and not line.startswith(" "):
-                current_iface = line.split()[0]
-            if current_iface and ("Mode:Monitor" in line or "Mode: Monitor" in line):
-                log(f"Detected monitor mode interface: {current_iface}")
-                return current_iface
-                
-    log("CRITICAL: No monitor mode interface found. Please put an interface in monitor mode or specify one with -i.")
-    sys.exit(1)
+    if not iface:
+        output = run_cmd("iwconfig 2>/dev/null", check=False)
+        if output:
+            for line in output.splitlines():
+                if line and not line.startswith(" "):
+                    current_iface = line.split()[0]
+                if current_iface and ("Mode:Monitor" in line or "Mode: Monitor" in line):
+                    log(f"Detected monitor mode interface: {current_iface}")
+                    return current_iface
+        log("CRITICAL: No monitor mode interface found. Please put an interface in monitor mode or specify one with -i.")
+        sys.exit(1)
+
+    log(f"Checking specified interface: {iface}")
+    output = run_cmd(f"iwconfig {iface} 2>/dev/null", check=False)
+    
+    if output and ("Mode:Monitor" in output or "Mode: Monitor" in output):
+        log(f"Interface {iface} is already in monitor mode.")
+        return iface
+        
+    log(f"Interface {iface} is in Managed mode. Attempting to switch to Monitor mode...")
+    
+    run_cmd(f"ip link set {iface} down", check=False)
+    run_cmd(f"iw dev {iface} set type monitor", check=False)
+    run_cmd(f"ip link set {iface} up", check=False)
+    
+    check_out = run_cmd(f"iwconfig {iface} 2>/dev/null", check=False)
+    if check_out and ("Mode:Monitor" in check_out or "Mode: Monitor" in check_out):
+        log(f"Successfully switched {iface} to monitor mode.")
+        ORIGINAL_MODE_RESTORE = iface
+        return iface
+    else:
+        log(f"CRITICAL: Failed to put {iface} into monitor mode. Your card may not support it.")
+        sys.exit(1)
 
 def parse_scan_csv(csv_file, args):
     targets = []
