@@ -149,13 +149,31 @@ def parse_scan_csv(csv_file, args):
 
         if not ap_lines: return targets
 
-        reader = csv.DictReader(ap_lines)
+        reader = csv.reader(ap_lines)
+        headers = next(reader, None)
+        if not headers: return targets
+        
+        headers = [h.strip() for h in headers]
+        
+        try:
+            bssid_idx = headers.index('BSSID')
+            channel_idx = headers.index('channel')
+            essid_idx = headers.index('ESSID')
+            privacy_idx = headers.index('Privacy')
+            power_idx = headers.index('Power')
+        except ValueError:
+            log("Error: CSV headers do not match expected airodump-ng format.")
+            return targets
+
         for row in reader:
-            bssid = row.get('BSSID', '').strip()
-            channel = row.get(' channel', row.get('channel', '')).strip()
-            essid = row.get(' ESSID', row.get('ESSID', '')).strip()
-            privacy = row.get(' Privacy', row.get('Privacy', '')).strip()
-            power = row.get(' Power', row.get('Power', '-100')).strip()
+            if len(row) <= max(bssid_idx, channel_idx, essid_idx, privacy_idx, power_idx):
+                continue
+                
+            bssid = row[bssid_idx].strip()
+            channel = row[channel_idx].strip()
+            essid = row[essid_idx].strip()
+            privacy = row[privacy_idx].strip()
+            power = row[power_idx].strip()
             
             try:
                 power_val = int(power)
