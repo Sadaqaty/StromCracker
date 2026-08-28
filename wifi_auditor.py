@@ -380,7 +380,7 @@ def run_auditor(args):
                 if cap_files:
                     current_cap = sorted(cap_files)[-1]
                     if has_handshake(current_cap):
-                        log(f"✅ Handshake captured for {essid}!")
+                        log(f"Handshake captured for {essid}!")
                         shutil.copy(current_cap, expected_save_path)
                         captured_caps.append(expected_save_path)
                         handshake_found = True
@@ -407,7 +407,7 @@ def run_auditor(args):
                     last_deauth = time.time()
                 time.sleep(2)
             if not handshake_found:
-                log(f"❌ Failed to capture handshake for {essid}.")
+                log(f"Failed to capture handshake for {essid}.")
                 kill_subprocesses()
         if args.skip_crack:
             log("Skipping cracking phase.")
