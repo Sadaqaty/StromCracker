@@ -119,8 +119,10 @@ def parse_scan_csv(csv_file, args):
             
         ap_lines = []
         for line in lines:
-            if line.strip() == "" or "Station MAC" in line:
+            if "Station MAC" in line:
                 break
+            if line.strip() == "":
+                continue
             ap_lines.append(line)
 
         if not ap_lines: return targets
