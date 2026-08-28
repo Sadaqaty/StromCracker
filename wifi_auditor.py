@@ -47,10 +47,7 @@ def check_dependencies():
         sys.exit(1)
     log("All dependencies verified.")
 
-def cleanup(signum=None, frame=None):
-    if signum:
-        log(f"\nCaught signal {signum}. Cleaning up...")
-    
+def kill_subprocesses():
     for proc in ACTIVE_PROCS:
         if proc.poll() is None:
             try:
@@ -61,6 +58,13 @@ def cleanup(signum=None, frame=None):
                     os.kill(proc.pid, signal.SIGTERM)
                 except Exception:
                     pass
+    ACTIVE_PROCS.clear()
+
+def cleanup(signum=None, frame=None):
+    if signum:
+        log(f"\nCaught signal {signum}. Cleaning up...")
+    
+    kill_subprocesses()
     
     if ORIGINAL_MODE_RESTORE:
         log(f"Restoring interface {ORIGINAL_MODE_RESTORE} to managed mode...")
@@ -257,7 +261,7 @@ def run_auditor(args):
                         
                         captured_caps.append(expected_save_path)
                         handshake_found = True
-                        cleanup()
+                        kill_subprocesses()
                         break
                 
                 if time.time() - last_deauth > 15:
@@ -280,7 +284,7 @@ def run_auditor(args):
             
             if not handshake_found:
                 log(f"Incomplete: {target['essid']} remains elusive.")
-                cleanup()
+                kill_subprocesses()
 
         if args.skip_crack:
             log("Phase 3: Skipping crack phase as requested.")
