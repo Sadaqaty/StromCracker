@@ -88,8 +88,26 @@ def get_monitor_interface(args):
                 if current_iface and ("Mode:Monitor" in line or "Mode: Monitor" in line):
                     log(f"Detected monitor mode interface: {current_iface}")
                     return current_iface
-        log("CRITICAL: No monitor mode interface found. Please put an interface in monitor mode or specify one with -i.")
-        sys.exit(1)
+            
+            available_ifaces = []
+            for line in output.splitlines():
+                if line and not line.startswith(" ") and "no wireless extensions" not in line:
+                    iface_name = line.split()[0]
+                    if iface_name:
+                        available_ifaces.append(iface_name)
+            
+            if INTERFACE_DEFAULT in available_ifaces:
+                iface = INTERFACE_DEFAULT
+            elif available_ifaces:
+                iface = available_ifaces[0]
+            else:
+                log("CRITICAL: No wireless interfaces detected on the system.")
+                sys.exit(1)
+            
+            log(f"Auto-selected fallback interface: {iface}")
+        else:
+            log("CRITICAL: Failed to run iwconfig to detect interfaces.")
+            sys.exit(1)
 
     log(f"Checking specified interface: {iface}")
     output = run_cmd(f"iwconfig {iface} 2>/dev/null", check=False)
