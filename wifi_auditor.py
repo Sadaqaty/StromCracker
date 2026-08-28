@@ -385,7 +385,7 @@ def parse_args():
     parser.add_argument("-i", "--interface", help="Monitor mode interface to use (e.g., wlan1)")
     parser.add_argument("-w", "--wordlist", default=WORDLIST_DEFAULT, help=f"Path to wordlist (default: {WORDLIST_DEFAULT})")
     parser.add_argument("-t", "--target", help="Specific ESSID or BSSID to target")
-    parser.add_argument("-s", "--min-signal", type=int, default=-85, help="Minimum signal strength (default: -85)")
+    parser.add_argument("-s", "--min-signal", type=int, default=-100, help="Minimum signal strength (default: -100 to capture everything)")
     parser.add_argument("--timeout", type=int, default=CAPTURE_TIMEOUT_DEFAULT, help=f"Capture timeout per target in seconds (default: {CAPTURE_TIMEOUT_DEFAULT})")
     parser.add_argument("--skip-crack", action="store_true", help="Skip Hashcat cracking phase after capture")
     
